@@ -15,7 +15,9 @@ function M:peek(job)
 
 	ya.sleep(math.max(0, rt.preview.image_delay / 1000 + start - os.clock()))
 	ya.image_show(cache, job.area)
-	ya.preview_widgets(job, {})
+	if ya.preview_widgets then
+		ya.preview_widgets(job, {})
+	end
 end
 
 function M:seek(job)
@@ -27,18 +29,23 @@ function M:seek(job)
 end
 
 function M:doc2pdf(job)
-	local tmp = "/tmp/yazi-" .. ya.uid() .. "/" .. ya.hash("office.yazi") .. "/"
+	local cache_home = os.getenv("XDG_CACHE_HOME")
+	if not cache_home or cache_home == "" then
+		local home = os.getenv("HOME")
+		cache_home = home and (home .. "/.cache") or "/tmp"
+	end
+	local tmp = cache_home .. "/yazi-office-" .. ya.uid() .. "/" .. ya.hash("office.yazi") .. "/"
+	fs.create("dir_all", Url(tmp))
 
 	--[[	For Future Reference: Regarding `libreoffice` as preconverter
 	  1. It prints errors to stdout (always, doesn't matter if it succeeded or it failed)
 	  2. Always writes the converted files to the filesystem, so no "Mario|Bros|Piping|Magic" for the data stream (https://ask.libreoffice.org/t/using-convert-to-output-to-stdout/38753)
-	  3. The `pdf:draw_pdf_Export` filter needs literal double quotes when defining its options (https://help.libreoffice.org/latest/en-US/text/shared/guide/pdf_params.html?&DbPAR=SHARED&System=UNIX#generaltext/shared/guide/pdf_params.xhp)
-	  3.1 Regarding double quotes and Lua strings, see https://www.lua.org/manual/5.1/manual.html#2.1 --]]
+	  3. Plain `pdf` lets LibreOffice choose the correct export filter for the input file type. --]]
 	local libreoffice = Command("libreoffice")
 		:arg({
 			"--headless",
 			"--convert-to",
-			'pdf:draw_pdf_Export:{"PageRange":{"type":"string","value":"' .. job.skip + 1 .. '"}}',
+			"pdf",
 			"--outdir",
 			tmp,
 			tostring(job.file.url),
