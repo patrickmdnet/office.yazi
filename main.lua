@@ -34,20 +34,35 @@ function M:doc2pdf(job)
 		local home = os.getenv("HOME")
 		cache_home = home and (home .. "/.cache") or "/tmp"
 	end
-	local tmp = cache_home .. "/yazi-office-" .. ya.uid() .. "/" .. ya.hash("office.yazi") .. "/"
-	fs.create("dir_all", Url(tmp))
+	local root = cache_home
+		.. "/yazi-office-"
+		.. ya.uid()
+		.. "/"
+		.. ya.hash(tostring(job.file.url) .. tostring({}))
+		.. "/"
+	local outdir, profile = root .. "output/", root .. "profile/"
+	fs.create("dir_all", Url(outdir))
+	fs.create("dir_all", Url(profile))
+
+	-- LibreOffice expects UserInstallation to be a URL, not a filesystem path.
+	local profile_url = "file://" .. profile:gsub("([^%w%-%._~/])", function(c)
+		return string.format("%%%02X", string.byte(c))
+	end)
 
 	--[[	For Future Reference: Regarding `libreoffice` as preconverter
 	  1. It prints errors to stdout (always, doesn't matter if it succeeded or it failed)
 	  2. Always writes the converted files to the filesystem, so no "Mario|Bros|Piping|Magic" for the data stream (https://ask.libreoffice.org/t/using-convert-to-output-to-stdout/38753)
 	  3. Plain `pdf` lets LibreOffice choose the correct export filter for the input file type. --]]
-	local libreoffice = Command("libreoffice")
+	local libreoffice, err = Command("libreoffice")
 		:arg({
+			"-env:UserInstallation=" .. profile_url,
 			"--headless",
+			"--norestore",
+			"--nodefault",
 			"--convert-to",
 			"pdf",
 			"--outdir",
-			tmp,
+			outdir,
 			tostring(job.file.url),
 		})
 		:stdin(Command.NULL)
@@ -55,24 +70,29 @@ function M:doc2pdf(job)
 		:stderr(Command.PIPED)
 		:output()
 
-	if not libreoffice.status.success then
+	if not libreoffice then
+		fs.remove("dir_all", Url(root))
+		return nil, Err("Failed to start LibreOffice: %s", err)
+	elseif not libreoffice.status.success then
 		local output = libreoffice.stdout .. libreoffice.stderr
 		local version = (output:match("LibreOffice .+") or ""):gsub("%\n.*", "")
 		local error = (output:match("Error:? .+") or ""):gsub("%\n.*", "")
 		if version ~= "" or error ~= "" then
 			ya.err((version or "LibreOffice") .. " " .. (error or "Unknown error"))
 		end
+		fs.remove("dir_all", Url(root))
 		return nil, Err("Failed to preconvert `%s` to a temporary PDF", job.file.name)
 	end
 
-	local tmp = tmp .. job.file.name:gsub("%.[^%.]+$", ".pdf")
+	local tmp = outdir .. job.file.name:gsub("%.[^%.]+$", ".pdf")
 	local read_permission = io.open(tmp, "r")
 	if not read_permission then
+		fs.remove("dir_all", Url(root))
 		return nil, Err("Failed to read `%s`: make sure file exists and have read access", tmp)
 	end
 	read_permission:close()
 
-	return tmp
+	return tmp, root
 end
 
 function M:preload(job)
@@ -81,9 +101,9 @@ function M:preload(job)
 		return true
 	end
 
-	local tmp_pdf, err = self:doc2pdf(job)
+	local tmp_pdf, tmp_root_or_err = self:doc2pdf(job)
 	if not tmp_pdf then
-		return true, Err("    " .. "%s", err)
+		return true, Err("    " .. "%s", tmp_root_or_err)
 	end
 
 	local output, err = Command("pdftoppm")
@@ -100,9 +120,9 @@ function M:preload(job)
 		:stderr(Command.PIPED)
 		:output()
 
-	local rm_tmp_pdf, rm_err = fs.remove("file", Url(tmp_pdf))
-	if not rm_tmp_pdf then
-		return true, Err("Failed to remove %s, error: %s", tmp_pdf, rm_err)
+	local cleaned, clean_err = fs.remove("dir_all", Url(tmp_root_or_err))
+	if not cleaned then
+		return true, Err("Failed to remove %s, error: %s", tmp_root_or_err, clean_err)
 	end
 
 	if not output then
