@@ -34,6 +34,8 @@ function M:doc2pdf(job)
 		local home = os.getenv("HOME")
 		cache_home = home and (home .. "/.cache") or "/tmp"
 	end
+	-- Keep each conversion isolated so concurrent previews and documents with the
+	-- same basename (such as report.odt and report.ods) cannot share output.
 	local root = cache_home
 		.. "/yazi-office-"
 		.. ya.uid()
