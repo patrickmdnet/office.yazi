@@ -34,7 +34,14 @@ function M:doc2pdf(job)
 		local home = os.getenv("HOME")
 		cache_home = home and (home .. "/.cache") or "/tmp"
 	end
-	local tmp = cache_home .. "/yazi-office-" .. ya.uid() .. "/" .. ya.hash("office.yazi") .. "/"
+	-- LibreOffice names the converted PDF from the source basename, so documents
+	-- such as `report.odt` and `report.ods` must not share an output directory.
+	local tmp = cache_home
+		.. "/yazi-office-"
+		.. ya.uid()
+		.. "/"
+		.. ya.hash("office.yazi:" .. tostring(job.file.url))
+		.. "/"
 	fs.create("dir_all", Url(tmp))
 
 	--[[	For Future Reference: Regarding `libreoffice` as preconverter
