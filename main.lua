@@ -2,6 +2,11 @@
 
 local M = {}
 
+local is_hovered = ya.sync(function(_, url)
+	local h = cx.active.current.hovered
+	return h and tostring(h.url) == url
+end)
+
 function M:peek(job)
 	local start, cache = os.clock(), ya.file_cache(job)
 	if not cache then
@@ -34,15 +39,13 @@ function M:doc2pdf(job)
 		local home = os.getenv("HOME")
 		cache_home = home and (home .. "/.cache") or "/tmp"
 	end
-	-- Keep each conversion isolated so concurrent previews and documents with the
-	-- same basename (such as report.odt and report.ods) cannot share output.
-	local root = cache_home
-		.. "/yazi-office-"
-		.. ya.uid()
-		.. "/"
-		.. ya.hash(tostring(job.file.url) .. tostring({}))
-		.. "/"
-	local outdir, profile = root .. "output/", root .. "profile/"
+	-- Use one Yazi-only LibreOffice profile so conversions cannot attach to the
+	-- desktop session, while still letting LibreOffice serialize concurrent
+	-- requests through one instance. Keep output unique to avoid same-basename
+	-- collisions (such as report.odt and report.ods).
+	local root = cache_home .. "/yazi-office-" .. ya.uid() .. "/"
+	local outdir = root .. "output/" .. ya.hash(tostring(job.file.url) .. tostring({})) .. "/"
+	local profile = root .. "profile/"
 	fs.create("dir_all", Url(outdir))
 	fs.create("dir_all", Url(profile))
 
@@ -73,7 +76,7 @@ function M:doc2pdf(job)
 		:output()
 
 	if not libreoffice then
-		fs.remove("dir_all", Url(root))
+		fs.remove("dir_all", Url(outdir))
 		return nil, Err("Failed to start LibreOffice: %s", err)
 	elseif not libreoffice.status.success then
 		local output = libreoffice.stdout .. libreoffice.stderr
@@ -82,30 +85,37 @@ function M:doc2pdf(job)
 		if version ~= "" or error ~= "" then
 			ya.err((version or "LibreOffice") .. " " .. (error or "Unknown error"))
 		end
-		fs.remove("dir_all", Url(root))
+		fs.remove("dir_all", Url(outdir))
 		return nil, Err("Failed to preconvert `%s` to a temporary PDF", job.file.name)
 	end
 
 	local tmp = outdir .. job.file.name:gsub("%.[^%.]+$", ".pdf")
 	local read_permission = io.open(tmp, "r")
 	if not read_permission then
-		fs.remove("dir_all", Url(root))
+		fs.remove("dir_all", Url(outdir))
 		return nil, Err("Failed to read `%s`: make sure file exists and have read access", tmp)
 	end
 	read_permission:close()
 
-	return tmp, root
+	return tmp, outdir
 end
 
 function M:preload(job)
+	-- Yazi invokes preloaders for every matching file on the visible page. Only
+	-- convert the hovered file, even when office is accidentally configured as a
+	-- preloader, to avoid a burst of LibreOffice processes.
+	if not is_hovered(tostring(job.file.url)) then
+		return true
+	end
+
 	local cache = ya.file_cache(job)
 	if not cache or fs.cha(cache) then
 		return true
 	end
 
-	local tmp_pdf, tmp_root_or_err = self:doc2pdf(job)
+	local tmp_pdf, tmp_outdir_or_err = self:doc2pdf(job)
 	if not tmp_pdf then
-		return true, Err("    " .. "%s", tmp_root_or_err)
+		return true, Err("    " .. "%s", tmp_outdir_or_err)
 	end
 
 	local output, err = Command("pdftoppm")
@@ -122,9 +132,9 @@ function M:preload(job)
 		:stderr(Command.PIPED)
 		:output()
 
-	local cleaned, clean_err = fs.remove("dir_all", Url(tmp_root_or_err))
+	local cleaned, clean_err = fs.remove("dir_all", Url(tmp_outdir_or_err))
 	if not cleaned then
-		return true, Err("Failed to remove %s, error: %s", tmp_root_or_err, clean_err)
+		return true, Err("Failed to remove %s, error: %s", tmp_outdir_or_err, clean_err)
 	end
 
 	if not output then
