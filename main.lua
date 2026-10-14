@@ -58,7 +58,11 @@ function M:doc2pdf(job)
 	  1. It prints errors to stdout (always, doesn't matter if it succeeded or it failed)
 	  2. Always writes the converted files to the filesystem, so no "Mario|Bros|Piping|Magic" for the data stream (https://ask.libreoffice.org/t/using-convert-to-output-to-stdout/38753)
 	  3. Plain `pdf` lets LibreOffice choose the correct export filter for the input file type. --]]
-	local libreoffice, err = Command("libreoffice")
+	local executable = ya.target_family() == "windows"
+	    and "soffice.com"
+	    or "libreoffice"
+	
+	local libreoffice, err = Command(executable):
 		:arg({
 			"-env:UserInstallation=" .. profile_url,
 			"--headless",
