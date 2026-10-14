@@ -2,6 +2,40 @@
 
 local M = {}
 
+local function get_safe_username()
+	-- Neither `ya.uid()` nor `ya.user_name()` work on windows.
+	local username = os.getenv("USERNAME") or os.getenv("USER") or os.getenv("LOGNAME")
+
+	if not username then
+		return "fallback_user"
+	end
+
+	-- Sanitize
+	return username:gsub("[\\/% ]", "_"):lower()
+end
+
+local function get_temp_dir()
+    local is_windows = ya.target_family() == "windows"
+
+    local temp
+
+    if is_windows then
+        temp = os.getenv("TEMP")
+            or os.getenv("TMP")
+            or "C:\\Windows\\Temp"
+    else
+        temp = os.getenv("TMPDIR")
+            or os.getenv("TMP")
+            or "/tmp"
+    end
+
+    -- Normalize path separators
+    return temp:gsub("\\", "/")
+end
+
+local USERNAME = get_safe_username()
+local TEMPDIR = get_temp_dir()
+
 local is_hovered = ya.sync(function(_, url)
 	local h = cx.active.current.hovered
 	return h and tostring(h.url) == url
@@ -37,20 +71,24 @@ function M:doc2pdf(job)
 	local cache_home = os.getenv("XDG_CACHE_HOME")
 	if not cache_home or cache_home == "" then
 		local home = os.getenv("HOME")
-		cache_home = home and (home .. "/.cache") or "/tmp"
+		cache_home = home and (home .. "/.cache") or TEMPDIR
 	end
 	-- Use one Yazi-only LibreOffice profile so conversions cannot attach to the
 	-- desktop session, while still letting LibreOffice serialize concurrent
 	-- requests through one instance. Keep output unique to avoid same-basename
 	-- collisions (such as report.odt and report.ods).
-	local root = cache_home .. "/yazi-office-" .. ya.uid() .. "/"
+	local root = cache_home .. "/yazi-office-" .. USERNAME .. "/" .. ya.hash("office.yazi") .. "/"
 	local outdir = root .. "output/" .. ya.hash(tostring(job.file.url) .. tostring({})) .. "/"
 	local profile = root .. "profile/"
 	fs.create("dir_all", Url(outdir))
 	fs.create("dir_all", Url(profile))
 
-	-- LibreOffice expects UserInstallation to be a URL, not a filesystem path.
-	local profile_url = "file://" .. profile:gsub("([^%w%-%._~/])", function(c)
+	-- LibreOffice expects UserInstallation to be a URL, not a filesystem path
+	-- windows path starts with drive letter so need extra slash
+	local file_url_prefix = ya.target_family() == "windows" and "file:///" or "file://"	
+	-- do not escape the colon on windows (for C:)
+	local regex = ya.target_family() == "windows" and "([^%w%-%._~/:])" or "([^%w%-%._~/])"
+	local profile_url = file_url_prefix .. profile:gsub(regex, function(c)
 		return string.format("%%%02X", string.byte(c))
 	end)
 
@@ -61,8 +99,8 @@ function M:doc2pdf(job)
 	local executable = ya.target_family() == "windows"
 	    and "soffice.com"
 	    or "libreoffice"
-	
-	local libreoffice, err = Command(executable):
+
+	local libreoffice, err = Command(executable)
 		:arg({
 			"-env:UserInstallation=" .. profile_url,
 			"--headless",
