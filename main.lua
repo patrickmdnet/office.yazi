@@ -108,10 +108,34 @@ local function output_with_timeout(cmd, timeout)
 	return child:wait_with_output()
 end
 
+-- Returns the plugin's cache directory, and where the converted PDF of this document is kept
+local function get_paths(job)
+	local cache_home = os.getenv("XDG_CACHE_HOME")
+	if not cache_home or cache_home == "" then
+		local home = os.getenv("HOME")
+		cache_home = home and (home .. "/.cache") or TEMPDIR
+	end
+	local root = cache_home .. "/yazi-office-" .. USERNAME .. "/" .. ya.hash("office.yazi") .. "/"
+
+	-- Converting is the slow part, so keep the PDF around for every page of the
+	-- document, and convert again only when the file changes.
+	local cha = job.file.cha
+	local key = string.format("%s//%s//%s", tostring(job.file.url), cha.mtime or "", cha.len or "")
+	return root, root .. "pdf/" .. ya.hash(key) .. ".pdf"
+end
+
 function M:peek(job)
 	local start, cache = os.clock(), ya.file_cache(job)
 	if not cache then
 		return
+	end
+
+	-- Let the user know when the slow LibreOffice conversion is about to run
+	if not fs.cha(cache) then
+		local _, pdf = get_paths(job)
+		if not fs.cha(Url(pdf)) then
+			preview_widget(job, ui.Line("Converting with LibreOffice..."):area(job.area):align(ui.Align.CENTER))
+		end
 	end
 
 	local ok, err, bound = self:preload(job)
@@ -135,24 +159,14 @@ function M:seek(job)
 end
 
 function M:doc2pdf(job)
-	local cache_home = os.getenv("XDG_CACHE_HOME")
-	if not cache_home or cache_home == "" then
-		local home = os.getenv("HOME")
-		cache_home = home and (home .. "/.cache") or TEMPDIR
-	end
 	-- Use one Yazi-only LibreOffice profile so conversions cannot attach to the
 	-- desktop session, while still letting LibreOffice serialize concurrent
 	-- requests through one instance. Keep output unique to avoid same-basename
 	-- collisions (such as report.odt and report.ods).
-	local root = cache_home .. "/yazi-office-" .. USERNAME .. "/" .. ya.hash("office.yazi") .. "/"
+	local root, pdf = get_paths(job)
 	local pdfdir = root .. "pdf/"
 	local outroot = root .. "output/"
 
-	-- Converting is the slow part, so keep the PDF around for every page of the
-	-- document, and convert again only when the file changes.
-	local cha = job.file.cha
-	local key = string.format("%s//%s//%s", tostring(job.file.url), cha.mtime or "", cha.len or "")
-	local pdf = pdfdir .. ya.hash(key) .. ".pdf"
 	if fs.cha(Url(pdf)) then
 		return pdf
 	end
